@@ -1,0 +1,9 @@
+#-*-Shell-script-*-#
+
+# Python
+backend/.env
+backend/__pycache__/
+
+# Node
+frontend/node_modules/
+frontend/.next/
