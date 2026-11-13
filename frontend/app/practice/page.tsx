@@ -3,48 +3,42 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import {
-  Video,
-  Mic,
-  MicOff,
   Play,
   Square,
   Sparkles,
-  Eye,
-  Activity,
-  AlertCircle,
-  Clock,
+  Layers,
+  AlertTriangle,
   RotateCcw,
   CheckCircle2,
-  Cpu,
   ShieldCheck,
   BrainCircuit,
   Loader2,
-  Zap,
-  Layers,
-  AlertTriangle,
-  Briefcase,
-  HelpCircle,
+  Mic,
+  MicOff,
+  AlertCircle,
 } from "lucide-react";
 
 import { useFacialLandmarks } from "@/hooks/useFacialLandmarks";
 import { useAudioMetrics } from "@/hooks/useAudioMetrics";
 import { ScorecardModal } from "@/components/ScorecardModal";
 import FuturisticFaceTracker, { FaceTrackerMetrics } from "@/components/FuturisticFaceTracker";
+import { MissionStageSelect } from "@/components/MissionStageSelect";
+import { HudTeleprompter } from "@/components/HudTeleprompter";
+import { FlightComputerTelemetry } from "@/components/FlightComputerTelemetry";
 import {
   CompiledSessionPayload,
   AnalyzeSessionResponse,
   RecommendedDrill,
 } from "@/types/session";
+import {
+  MISSION_TRACKS,
+  MissionTrack,
+  MissionQuestion,
+} from "@/types/mission";
 
 const STANDARD_PRACTICE_SECONDS = 60;
 const DEMO_USER_ID = "demo_speaker_1";
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
-
-const PRESET_QUESTIONS = [
-  "Tell me about a time you resolved a high-severity production incident.",
-  "Explain a complex architecture decision to a non-technical stakeholder.",
-  "Why are you interested in this position and what makes you unique?",
-];
 
 export default function PracticeStudioPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -57,7 +51,6 @@ export default function PracticeStudioPage() {
   // Practice session state
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isPracticing, setIsPracticing] = useState(false);
-  const [targetDuration, setTargetDuration] = useState(STANDARD_PRACTICE_SECONDS);
   const [secondsRemaining, setSecondsRemaining] = useState(STANDARD_PRACTICE_SECONDS);
   const [activeDrill, setActiveDrill] = useState<RecommendedDrill | null>(null);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -66,11 +59,16 @@ export default function PracticeStudioPage() {
   const [cyberMetrics, setCyberMetrics] = useState<FaceTrackerMetrics | null>(null);
   const cyberMetricsHistoryRef = useRef<{ gazeAligned: boolean }[]>([]);
 
-  // Interview Context State (Dual-Pillar Scoring)
-  const [jobTitle, setJobTitle] = useState("Senior AI/Software Engineer");
-  const [selectedQuestion, setSelectedQuestion] = useState(PRESET_QUESTIONS[0]);
-  const [customQuestion, setCustomQuestion] = useState("");
-  const [isCustomQuestion, setIsCustomQuestion] = useState(false);
+  // Professional Mission Tracks State (Multi-Track Stage Select)
+  const [selectedTrack, setSelectedTrack] = useState<MissionTrack>(MISSION_TRACKS[0]);
+  const [selectedQuestion, setSelectedQuestion] = useState<MissionQuestion>(
+    MISSION_TRACKS[0].questions[0]
+  );
+  const [customRole, setCustomRole] = useState("Senior AI/Software Engineer");
+  const [customQuestionText, setCustomQuestionText] = useState(
+    "Explain why your approach uniquely solves the organization's core challenge."
+  );
+  const [isCustomActive, setIsCustomActive] = useState(false);
 
   // Analysis submission & loading states
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -84,7 +82,6 @@ export default function PracticeStudioPage() {
 
   // Custom Hooks (for Minimal Mode and Gaze Counters)
   const {
-    isModelLoaded,
     isLookingAtCamera,
     gazeOnCameraPct,
     startTracking,
@@ -101,6 +98,22 @@ export default function PracticeStudioPage() {
     startAudio,
     stopAudio,
   } = useAudioMetrics();
+
+  // Compute effective role & prompt question
+  const effectiveRole =
+    isCustomActive || selectedTrack.id === "custom"
+      ? customRole.trim() || "Senior Professional Leader"
+      : selectedTrack.title;
+
+  const effectiveQuestion =
+    isCustomActive || selectedTrack.id === "custom"
+      ? customQuestionText.trim() || selectedQuestion.text
+      : selectedQuestion.text;
+
+  const effectiveRubric =
+    isCustomActive || selectedTrack.id === "custom"
+      ? "TARGET: CUSTOM EVALUATION | DOMAIN RELEVANCE"
+      : selectedQuestion.targetRubric || selectedTrack.rubricHint;
 
   // 1. Initialize Webcam & Mic Stream
   const initMediaDevices = useCallback(async () => {
@@ -140,12 +153,15 @@ export default function PracticeStudioPage() {
   }, [initMediaDevices]);
 
   // Track cyber metrics history during practice
-  const handleCyberMetricsUpdate = useCallback((metrics: FaceTrackerMetrics) => {
-    setCyberMetrics(metrics);
-    if (isPracticing) {
-      cyberMetricsHistoryRef.current.push({ gazeAligned: metrics.gazeAligned });
-    }
-  }, [isPracticing]);
+  const handleCyberMetricsUpdate = useCallback(
+    (metrics: FaceTrackerMetrics) => {
+      setCyberMetrics(metrics);
+      if (isPracticing) {
+        cyberMetricsHistoryRef.current.push({ gazeAligned: metrics.gazeAligned });
+      }
+    },
+    [isPracticing]
+  );
 
   // 2. Dispatch payload to Backend API (/api/v1/sessions/analyze)
   const submitSessionForAnalysis = useCallback(
@@ -160,7 +176,10 @@ export default function PracticeStudioPage() {
       const stepTimer3 = setTimeout(() => setAnalysisStep(4), 1800);
 
       try {
-        console.log(`[PracticeStudio] Dispatching LIVE payload to ${BACKEND_URL}/api/v1/sessions/analyze:`, payload);
+        console.log(
+          `[PracticeStudio] Dispatching LIVE payload to ${BACKEND_URL}/api/v1/sessions/analyze:`,
+          payload
+        );
 
         const response = await fetch(`${BACKEND_URL}/api/v1/sessions/analyze`, {
           method: "POST",
@@ -182,9 +201,10 @@ export default function PracticeStudioPage() {
         setApiError(null);
       } catch (err: any) {
         console.error("[PracticeStudio] LIVE Analysis Error:", err);
-        // Explicitly set real error without falling back to any mock
         setApiError(
-          `Analysis Request Failed: ${err.message || "Could not reach FastAPI server at " + BACKEND_URL}. Ensure the backend is running.`
+          `Analysis Request Failed: ${
+            err.message || "Could not reach FastAPI server at " + BACKEND_URL
+          }. Ensure the backend is running.`
         );
         setScorecardData(null);
         setIsScorecardOpen(false);
@@ -213,18 +233,15 @@ export default function PracticeStudioPage() {
     let effectiveGazePct = finalGazePct;
     if (hudViewMode === "cyberpunk" && cyberMetricsHistoryRef.current.length > 0) {
       const alignedCount = cyberMetricsHistoryRef.current.filter((m) => m.gazeAligned).length;
-      effectiveGazePct = Math.round((alignedCount / cyberMetricsHistoryRef.current.length) * 100) / 100;
+      effectiveGazePct =
+        Math.round((alignedCount / cyberMetricsHistoryRef.current.length) * 100) / 100;
     }
-
-    const currentInterviewQuestion = isCustomQuestion
-      ? customQuestion.trim() || PRESET_QUESTIONS[0]
-      : selectedQuestion;
 
     const compiled: CompiledSessionPayload = {
       user_id: DEMO_USER_ID,
       session_id: crypto.randomUUID ? crypto.randomUUID() : undefined,
-      job_title: jobTitle.trim() || "Senior AI/Software Engineer",
-      interview_question: currentInterviewQuestion,
+      job_title: effectiveRole,
+      interview_question: effectiveQuestion,
       transcript:
         finalAudio.transcript ||
         "In our system architecture we introduced Redis caching to eliminate database transaction bottlenecks and partitioned our tables.",
@@ -242,10 +259,8 @@ export default function PracticeStudioPage() {
     stopAudio,
     hudViewMode,
     submitSessionForAnalysis,
-    jobTitle,
-    isCustomQuestion,
-    customQuestion,
-    selectedQuestion,
+    effectiveRole,
+    effectiveQuestion,
   ]);
 
   // 4. Start Practice Session
@@ -254,7 +269,6 @@ export default function PracticeStudioPage() {
       setScorecardData(null);
       setIsScorecardOpen(false);
       setApiError(null);
-      setTargetDuration(durationSec);
       setSecondsRemaining(durationSec);
       cyberMetricsHistoryRef.current = [];
       resetGazeMetrics();
@@ -291,26 +305,24 @@ export default function PracticeStudioPage() {
     [handleStartPractice]
   );
 
-  const totalFillerCount = Object.values(fillerWords).reduce((a, b) => a + b, 0);
-
   return (
     <div className="flex-1 flex flex-col min-h-screen bg-background p-4 sm:p-8">
-      {/* Top Header */}
+      {/* Top Studio Header */}
       <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 pb-6 border-b border-surface-border">
         <div>
           <div className="flex items-center gap-3">
             <Link
               href="/"
-              className="text-xl font-bold tracking-tight text-white hover:text-accent-blue transition-colors"
+              className="text-xl font-bold tracking-tight text-white hover:text-cyan-400 transition-colors"
             >
-              Mirror <span className="text-cyan-400 font-light">Studio</span>
+              Mirror <span className="text-cyan-400 font-light">Simulation Studio</span>
             </Link>
-            <span className="px-2.5 py-0.5 text-xs font-medium rounded-full bg-surface-card border border-surface-border text-gray-300">
-              Speaker: <strong className="text-white">{DEMO_USER_ID}</strong>
+            <span className="px-2.5 py-0.5 text-xs font-medium rounded-full bg-surface-card border border-surface-border text-gray-300 font-mono">
+              AGENT_ID: <strong className="text-white">{DEMO_USER_ID}</strong>
             </span>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            Real-time on-device computer vision and live MongoDB Atlas episodic coaching
+            Real-time on-device computer vision &bull; In-Camera HUD Teleprompter &bull; MongoDB Atlas Memory
           </p>
         </div>
 
@@ -343,14 +355,14 @@ export default function PracticeStudioPage() {
           </div>
 
           {/* Live Pipeline Badge */}
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-semibold text-xs">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-semibold text-xs font-mono">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>LIVE API // ATLAS MEMORY</span>
           </div>
         </div>
       </header>
 
-      {/* Explicit Error Banner if API Call Fails (No silent mock fallback) */}
+      {/* Explicit Error Banner if API Call Fails */}
       {apiError && (
         <div className="my-4 p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in">
           <div className="flex items-center gap-2.5">
@@ -373,11 +385,12 @@ export default function PracticeStudioPage() {
 
       {/* Active Drill Banner */}
       {activeDrill && (
-        <div className="mt-4 p-3.5 rounded-xl bg-accent-blue/10 border border-accent-blue/30 flex items-center justify-between text-xs animate-in fade-in">
+        <div className="mt-4 p-3.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-between text-xs animate-in fade-in">
           <div className="flex items-center gap-2 text-white">
-            <Sparkles className="w-4 h-4 text-accent-blue" />
+            <Sparkles className="w-4 h-4 text-cyan-400" />
             <span>
-              Active Micro-Drill: <strong className="text-sky-300">{activeDrill.title}</strong> &bull; {activeDrill.instructions}
+              Active Micro-Drill: <strong className="text-cyan-300">{activeDrill.title}</strong> &bull;{" "}
+              {activeDrill.instructions}
             </span>
           </div>
           <button
@@ -389,22 +402,39 @@ export default function PracticeStudioPage() {
         </div>
       )}
 
-      {/* Permission alert if camera is denied */}
+      {/* Camera Permission Alert */}
       {hasPermission === false && (
         <div className="my-4 p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-sm flex items-center gap-3">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
           <span>
-            Camera or microphone access was blocked. Please enable camera permissions in your
-            browser address bar to test on-device gaze detection.
+            Camera or microphone access was blocked. Please enable camera permissions in your browser
+            address bar to test on-device gaze detection.
           </span>
         </div>
       )}
 
-      {/* Main Practice Workspace */}
+      {/* 1. Stage Select / Mission Selection Matrix Deck */}
+      <div className="mt-6">
+        <MissionStageSelect
+          selectedTrack={selectedTrack}
+          onSelectTrack={setSelectedTrack}
+          selectedQuestion={selectedQuestion}
+          onSelectQuestion={setSelectedQuestion}
+          customRole={customRole}
+          onChangeCustomRole={setCustomRole}
+          customQuestionText={customQuestionText}
+          onChangeCustomQuestionText={setCustomQuestionText}
+          isCustomActive={isCustomActive}
+          onToggleCustom={setIsCustomActive}
+          isPracticing={isPracticing}
+        />
+      </div>
+
+      {/* 2. Main Practice Workspace (2 cols Camera Feed + 1 col Flight Computer Telemetry) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 my-6 flex-1">
-        {/* Left 2 Cols: Viewfinder Box & Audio Visualizer */}
+        {/* Left 2 Cols: Viewfinder Box & Controls */}
         <div className="lg:col-span-2 flex flex-col gap-4">
-          {/* Cyberpunk HUD or Minimal Video Feed */}
+          {/* Cyberpunk HUD or Minimal Video Feed with In-Camera Teleprompter */}
           {hudViewMode === "cyberpunk" ? (
             <div className="relative">
               <FuturisticFaceTracker
@@ -412,13 +442,17 @@ export default function PracticeStudioPage() {
                 showTelemetryOverlay={true}
               />
 
-              {/* Countdown overlay during active practice */}
-              {isPracticing && (
-                <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-30 flex items-center gap-2 px-4 py-1.5 rounded-full bg-black/80 backdrop-blur-md border border-cyan-400/40 text-cyan-300 font-mono text-xs font-bold shadow-[0_0_15px_rgba(0,240,255,0.3)]">
-                  <Clock className="w-3.5 h-3.5 text-cyan-400 animate-spin" style={{ animationDuration: "6s" }} />
-                  <span>SESSION TIME: {secondsRemaining}s</span>
-                </div>
-              )}
+              {/* In-Camera HUD Teleprompter Overlay */}
+              <HudTeleprompter
+                questionText={effectiveQuestion}
+                targetRubric={effectiveRubric}
+                roleTitle={effectiveRole}
+                isPracticing={isPracticing}
+                secondsRemaining={secondsRemaining}
+                isLookingAtCamera={
+                  cyberMetrics ? cyberMetrics.gazeAligned : true
+                }
+              />
             </div>
           ) : (
             <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-black border border-surface-border shadow-2xl flex items-center justify-center">
@@ -434,27 +468,15 @@ export default function PracticeStudioPage() {
                 className="absolute inset-0 w-full h-full pointer-events-none transform -scale-x-100"
               />
 
-              {isPracticing && (
-                <div className="absolute top-4 left-4 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-medium bg-black/60 shadow-lg">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      isLookingAtCamera
-                        ? "bg-emerald-400 animate-pulse"
-                        : "bg-amber-400 animate-ping"
-                    }`}
-                  />
-                  <span className={isLookingAtCamera ? "text-emerald-300" : "text-amber-300"}>
-                    {isLookingAtCamera ? "Gaze Locked on Camera" : "Gaze Shifted Away"}
-                  </span>
-                </div>
-              )}
-
-              {isPracticing && (
-                <div className="absolute top-4 right-4 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-white font-mono text-xs font-semibold">
-                  <Clock className="w-3.5 h-3.5 text-accent-blue" />
-                  <span>{secondsRemaining}s remaining</span>
-                </div>
-              )}
+              {/* In-Camera HUD Teleprompter Overlay in Minimal Mode */}
+              <HudTeleprompter
+                questionText={effectiveQuestion}
+                targetRubric={effectiveRubric}
+                roleTitle={effectiveRole}
+                isPracticing={isPracticing}
+                secondsRemaining={secondsRemaining}
+                isLookingAtCamera={isLookingAtCamera}
+              />
             </div>
           )}
 
@@ -466,7 +488,7 @@ export default function PracticeStudioPage() {
               ) : (
                 <MicOff className="w-4 h-4 text-gray-500" />
               )}
-              <span>Mic Activity</span>
+              <span>Mic Visualizer</span>
             </div>
 
             {/* Equalizer Visualizer Bars */}
@@ -496,105 +518,35 @@ export default function PracticeStudioPage() {
             </span>
           </div>
 
-          {/* Interview Context Selector (Dual-Pillar Scoring) */}
-          <div className="p-4 rounded-xl bg-surface border border-surface-border space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-gray-200 flex items-center gap-2">
-                <Briefcase className="w-4 h-4 text-cyan-400" />
-                Interview Context (Dual-Pillar Rubric)
-              </span>
-              <span className="text-[10px] text-gray-400 font-mono">
-                Content 60% + Delivery 40%
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-medium text-gray-400 mb-1">
-                  Target Role / Position
-                </label>
-                <input
-                  type="text"
-                  value={jobTitle}
-                  onChange={(e) => setJobTitle(e.target.value)}
-                  disabled={isPracticing}
-                  placeholder="e.g. Senior AI/Software Engineer"
-                  className="w-full px-3 py-2 rounded-lg bg-surface-card border border-surface-border text-white text-xs focus:outline-none focus:border-cyan-400 disabled:opacity-60 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-medium text-gray-400 mb-1">
-                  Target Interview Question
-                </label>
-                <select
-                  value={isCustomQuestion ? "custom" : selectedQuestion}
-                  onChange={(e) => {
-                    if (e.target.value === "custom") {
-                      setIsCustomQuestion(true);
-                    } else {
-                      setIsCustomQuestion(false);
-                      setSelectedQuestion(e.target.value);
-                    }
-                  }}
-                  disabled={isPracticing}
-                  className="w-full px-3 py-2 rounded-lg bg-surface-card border border-surface-border text-white text-xs focus:outline-none focus:border-cyan-400 disabled:opacity-60 transition-colors"
-                >
-                  {PRESET_QUESTIONS.map((q, idx) => (
-                    <option key={idx} value={q} className="bg-gray-900 text-white">
-                      {q}
-                    </option>
-                  ))}
-                  <option value="custom" className="bg-gray-900 text-cyan-300">
-                    &plus; Custom Question...
-                  </option>
-                </select>
-              </div>
-            </div>
-
-            {isCustomQuestion && (
-              <div className="pt-1">
-                <input
-                  type="text"
-                  value={customQuestion}
-                  onChange={(e) => setCustomQuestion(e.target.value)}
-                  disabled={isPracticing}
-                  placeholder="Enter your custom interview question prompt..."
-                  className="w-full px-3 py-2 rounded-lg bg-surface-card border border-surface-border text-white text-xs focus:outline-none focus:border-cyan-400 disabled:opacity-60 transition-colors"
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Control Buttons */}
+          {/* Action Control Buttons */}
           <div className="flex items-center gap-4">
             {!isPracticing ? (
               <div className="flex-1 flex gap-3">
                 <button
                   onClick={() => handleStartPractice(60)}
                   disabled={isAnalyzing}
-                  className="flex-1 flex items-center justify-center gap-2 py-4 px-6 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-50 text-gray-950 font-bold transition-all shadow-lg shadow-cyan-500/20"
+                  className="flex-1 flex items-center justify-center gap-2 py-4 px-6 rounded-xl bg-cyan-400 hover:bg-cyan-300 disabled:opacity-50 text-gray-950 font-bold transition-all shadow-lg shadow-cyan-500/20 font-mono tracking-wide"
                 >
                   <Play className="w-5 h-5 fill-current" />
-                  Start 60s Practice
+                  INITIATE 60s SIMULATION
                 </button>
 
                 {scorecardData && (
                   <button
                     onClick={() => setIsScorecardOpen(true)}
-                    className="flex items-center justify-center gap-2 py-4 px-5 rounded-xl bg-surface-card hover:bg-surface-border border border-surface-border text-white text-xs font-semibold transition-all"
+                    className="flex items-center justify-center gap-2 py-4 px-5 rounded-xl bg-surface-card hover:bg-surface-border border border-surface-border text-white text-xs font-semibold transition-all font-mono"
                   >
-                    View Scorecard ({scorecardData.scorecard.overall_score})
+                    View Scorecard ({scorecardData.scorecard.overall_score}/100)
                   </button>
                 )}
               </div>
             ) : (
               <button
                 onClick={handleFinishPractice}
-                className="flex-1 flex items-center justify-center gap-2 py-4 px-6 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-bold transition-all shadow-lg shadow-rose-500/20"
+                className="flex-1 flex items-center justify-center gap-2 py-4 px-6 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-bold transition-all shadow-lg shadow-rose-500/20 font-mono tracking-wide"
               >
                 <Square className="w-5 h-5 fill-current" />
-                Finish Early &amp; Analyze
+                TERMINATE &amp; ANALYZE SIMULATION
               </button>
             )}
           </div>
@@ -609,109 +561,35 @@ export default function PracticeStudioPage() {
                 Responsible AI Guarantee
               </h4>
               <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">
-                Raw video is never transmitted or stored. Analysis is derived on-device and focuses exclusively on observable presentation signals without diagnosing psychological states.
+                Raw video is never transmitted or stored. Analysis is derived on-device and focuses exclusively
+                on observable presentation signals without diagnosing psychological states.
               </p>
             </div>
           </div>
         </div>
 
-        {/* Right Col: Live Telemetry */}
+        {/* Right Col: High-Tech Flight Computer Telemetry Strip */}
         <div className="flex flex-col gap-4">
-          <div className="p-5 rounded-2xl bg-surface border border-surface-border">
-            <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-4 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-cyan-400" />
-              Observable Signals
-            </h2>
-
-            <div className="grid grid-cols-2 gap-3">
-              {/* Gaze Lock % */}
-              <div className="p-3.5 rounded-xl bg-surface-card border border-surface-border/60">
-                <span className="text-xs text-gray-400 flex items-center gap-1.5 mb-1">
-                  <Eye className="w-3.5 h-3.5 text-sky-400" />
-                  Gaze on Camera
-                </span>
-                <span className="text-2xl font-bold font-mono text-white">
-                  {hudViewMode === "cyberpunk" && cyberMetrics
-                    ? cyberMetrics.gazeAligned
-                      ? "92%"
-                      : "68%"
-                    : `${Math.round(gazeOnCameraPct * 100)}%`}
-                </span>
-                <div className="w-full bg-gray-800 rounded-full h-1.5 mt-2 overflow-hidden">
-                  <div
-                    className="bg-cyan-400 h-1.5 rounded-full transition-all duration-300"
-                    style={{
-                      width:
-                        hudViewMode === "cyberpunk" && cyberMetrics
-                          ? cyberMetrics.gazeAligned
-                            ? "92%"
-                            : "68%"
-                          : `${Math.round(gazeOnCameraPct * 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Speaking Pace (WPM) */}
-              <div className="p-3.5 rounded-xl bg-surface-card border border-surface-border/60">
-                <span className="text-xs text-gray-400 flex items-center gap-1.5 mb-1">
-                  <Clock className="w-3.5 h-3.5 text-emerald-400" />
-                  Speaking Rate
-                </span>
-                <span className="text-2xl font-bold font-mono text-white">
-                  {speakingRateWpm}
-                </span>
-                <span className="text-xs text-gray-400 ml-1">WPM</span>
-              </div>
-
-              {/* Filler Words */}
-              <div className="p-3.5 rounded-xl bg-surface-card border border-surface-border/60">
-                <span className="text-xs text-gray-400 flex items-center gap-1.5 mb-1">
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-                  Filler Words
-                </span>
-                <span className="text-2xl font-bold font-mono text-amber-300">
-                  {totalFillerCount}
-                </span>
-                <div className="text-[10px] text-gray-400 truncate mt-1">
-                  {Object.entries(fillerWords)
-                    .map(([w, c]) => `${w}: ${c}`)
-                    .join(", ") || "none detected"}
-                </div>
-              </div>
-
-              {/* Pause Intervals > 1.5s */}
-              <div className="p-3.5 rounded-xl bg-surface-card border border-surface-border/60">
-                <span className="text-xs text-gray-400 flex items-center gap-1.5 mb-1">
-                  <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
-                  Pauses (&gt;1.5s)
-                </span>
-                <span className="text-2xl font-bold font-mono text-white">
-                  {pauseCount}
-                </span>
-              </div>
-            </div>
-
-            {/* Live Transcript Stream */}
-            <div className="mt-4 pt-4 border-t border-surface-border/60">
-              <span className="text-xs font-medium text-gray-400 block mb-2">
-                Live Speech Transcript
-              </span>
-              <div className="p-3 rounded-xl bg-surface-card border border-surface-border/40 text-xs text-gray-300 min-h-[90px] max-h-[140px] overflow-y-auto leading-relaxed">
-                {transcript || (
-                  <span className="text-gray-500 italic">
-                    {isPracticing
-                      ? "Start speaking... your words will appear here in real time."
-                      : "Click 'Start 60s Practice' to begin transcription."}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
+          <FlightComputerTelemetry
+            speakingRateWpm={speakingRateWpm}
+            fillerWords={fillerWords}
+            gazeOnCameraPct={
+              hudViewMode === "cyberpunk" && cyberMetrics
+                ? cyberMetrics.gazeAligned
+                  ? 0.92
+                  : 0.68
+                : gazeOnCameraPct
+            }
+            pauseCount={pauseCount}
+            transcript={transcript}
+            isPracticing={isPracticing}
+            targetRole={effectiveRole}
+            targetRubric={effectiveRubric}
+          />
         </div>
       </div>
 
-      {/* Realistic Multi-Agent Synthesis Loading Overlay */}
+      {/* Multi-Agent Synthesis Loading Overlay */}
       {isAnalyzing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
           <div className="w-full max-w-md p-6 rounded-2xl bg-surface border border-cyan-400/30 shadow-2xl flex flex-col items-center text-center">
@@ -726,11 +604,11 @@ export default function PracticeStudioPage() {
               Multi-Agent Team analyzing speech metrics &amp; retrieving Atlas memory...
             </h3>
             <p className="text-xs text-gray-400 mb-6">
-              Synthesizing observable habits, calculating dynamic score, and generating micro-drills
+              Synthesizing observable habits, evaluating &ldquo;{effectiveRole}&rdquo; rubric, and generating micro-drills
             </p>
 
             {/* Stepper animation */}
-            <div className="w-full space-y-2 text-left">
+            <div className="w-full space-y-2 text-left font-mono">
               <div
                 className={`flex items-center gap-2 p-2.5 rounded-lg text-xs transition-all ${
                   analysisStep >= 1

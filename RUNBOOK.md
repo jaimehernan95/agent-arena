@@ -1,9 +1,9 @@
 # Mirror - AI Presentation & Interview Coach
-## Hackathon Demo Day Runbook & Judge Pitch Guide
+## Project Runbook & Demo Guide
 
 ---
 
-## ⚡ 1. Rapid Pre-Flight Checklist
+## 1. Rapid Pre-Flight Checklist
 
 Ensure your environment variables are configured:
 - **`backend/.env`**:
@@ -20,7 +20,7 @@ Ensure your environment variables are configured:
 
 ---
 
-## 🚀 2. Startup Terminal Commands
+## 2. Startup Terminal Commands
 
 Open two terminal windows:
 
@@ -42,22 +42,22 @@ npm run dev
 
 ---
 
-## 🛡️ 3. Demo Day Safety & Fail-Safe Mode
+## 3. Demo Safety & Fail-Safe Mode
 
-Hackathon Wi-Fi is notoriously unreliable. Mirror includes an instant fail-safe:
-- **Header Toggle**: Click the **"Demo Mode: ARMED (Wi-Fi Safe)"** button in the studio header to toggle between **LIVE API** and **OFFLINE DEMO**.
-- **Instant Response**: When armed, Mirror loads `demo_mode.json` immediately with full stepper animation and realistic metrics, guaranteeing zero lag and zero downtime in front of judges.
+Network connectivity can be unreliable. Mirror includes an instant fail-safe:
+- **Header Toggle**: Click the **"Demo Mode: ARMED (Offline)"** button in the studio header to toggle between **LIVE API** and **OFFLINE DEMO**.
+- **Instant Response**: When armed, Mirror loads `demo_mode.json` immediately with full stepper animation and realistic metrics, guaranteeing zero lag and zero downtime during a presentation.
 
 ---
 
-## ⏱️ 4. The 60-Second Live Judge Pitch Script
+## 4. The 60-Second Live Demo Script
 
 > **Setting the Stage**: Open [http://localhost:3000/practice](http://localhost:3000/practice) in Chrome/Brave. Position yourself in front of the webcam.
 
 ---
 
 ### [00:00 - 00:15] The Problem & The Privacy Guarantee
-> *"Good morning, judges. Public speaking and technical interviews cause immense anxiety, but existing AI coaches violate user privacy by streaming and storing raw webcam video in the cloud.*
+> *"Good morning. Public speaking and technical interviews cause immense anxiety, but existing AI coaches violate user privacy by streaming and storing raw webcam video in the cloud.*
 > 
 > *Meet **Mirror**—the AI presentation coach built on a strict **Responsible AI Guarantee**: zero raw video frames ever leave your device. Using **MediaPipe running on WebAssembly in the browser**, we track eye-gaze lock and speech patterns 100% locally."*
 > 
@@ -95,7 +95,7 @@ Hackathon Wi-Fi is notoriously unreliable. Mirror includes an instant fail-safe:
 
 ---
 
-## 🗄️ 5. MongoDB Atlas Indexing Script
+## 5. MongoDB Atlas Indexing Script
 
 To index the `sessions` collection for 768-dimensional Vector Search:
 ```bash
