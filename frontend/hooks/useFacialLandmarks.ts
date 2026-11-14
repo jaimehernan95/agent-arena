@@ -64,8 +64,8 @@ export function useFacialLandmarks(
           },
           runningMode: "VIDEO",
           numFaces: 1,
-          outputFaceBlendshapes: false,
-          outputFacialTransformationMatrixes: false,
+          outputFaceBlendshapes: true,
+          outputFacialTransformationMatrixes: true,
         });
 
         if (isCancelled) return;

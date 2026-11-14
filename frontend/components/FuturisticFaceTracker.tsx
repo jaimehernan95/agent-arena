@@ -9,6 +9,16 @@ export interface FaceTrackerMetrics {
   gazeVector: { dx: number; dy: number };
   isHeadStable: boolean;
   headStabilityPct: number;
+  head: {
+    pitch: number;
+    yaw: number;
+    roll: number;
+    stabilized: {
+      pitch: number;
+      yaw: number;
+      roll: number;
+    };
+  };
 }
 
 interface FuturisticFaceTrackerProps {
@@ -38,6 +48,25 @@ const NOSE_RIDGE = [168, 6, 197, 195, 5, 4, 1, 19, 94];
 const LEFT_EYEBROW = [70, 63, 105, 66, 107];
 const RIGHT_EYEBROW = [336, 296, 334, 293, 300];
 
+/**
+ * Decomposes a 4x4 column-major transformation matrix into Euler angles (pitch, yaw, roll).
+ * @param m - The 16-element Float32Array representing the matrix.
+ * @returns An object with pitch, yaw, and roll in degrees.
+ */
+function decomposeMatrix(m: Float32Array) {
+  const pitch = Math.atan2(m[6], m[10]); // Rotation around X-axis
+  const yaw = Math.atan2(-m[2], Math.sqrt(m[6] * m[6] + m[10] * m[10])); // Rotation around Y-axis
+  const roll = Math.atan2(m[1], m[0]); // Rotation around Z-axis
+
+  // Convert radians to degrees
+  return {
+    pitch: pitch * (180 / Math.PI),
+    yaw: yaw * (180 / Math.PI),
+    roll: roll * (180 / Math.PI),
+  };
+}
+
+
 export default function FuturisticFaceTracker({
   onMetricsUpdate,
   className = "",
@@ -56,6 +85,7 @@ export default function FuturisticFaceTracker({
   const [mouthAperture, setMouthAperture] = useState<number>(0);
   const [isHeadStable, setIsHeadStable] = useState<boolean>(true);
   const [headStabilityPct, setHeadStabilityPct] = useState<number>(0.95);
+  const [head, setHead] = useState({ pitch: 0, yaw: 0, roll: 0 });
   const [cameraReady, setCameraReady] = useState<boolean>(false);
   const [modelReady, setModelReady] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -66,6 +96,8 @@ export default function FuturisticFaceTracker({
   const lastVideoTimeRef = useRef(-1);
   const prevNoseTipRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const stabilityHistoryRef = useRef<boolean[]>([]);
+  const smoothedHeadPoseRef = useRef({ pitch: 0, yaw: 0, roll: 0 });
+  const lastHeadPoseRef = useRef({ pitch: 0, yaw: 0, roll: 0 });
 
   // Pulsing animation phase
   const pulsePhaseRef = useRef(0);
@@ -94,8 +126,8 @@ export default function FuturisticFaceTracker({
           },
           runningMode: "VIDEO",
           numFaces: 1,
-          outputFaceBlendshapes: false,
-          outputFacialTransformationMatrixes: false,
+          outputFaceBlendshapes: true,
+          outputFacialTransformationMatrixes: true,
         });
 
         if (isCancelled) return;
@@ -325,7 +357,7 @@ export default function FuturisticFaceTracker({
             ctx.restore();
 
             // -----------------------------------------------------------
-            // C. Eyes & Iris Gaze Vectors
+            // C. Eyes & Iris Gaze Vectors (from Blendshapes for stability)
             // -----------------------------------------------------------
             ctx.save();
 
@@ -337,44 +369,29 @@ export default function FuturisticFaceTracker({
             drawPath(LEFT_EYE_CONTOUR);
             drawPath(RIGHT_EYE_CONTOUR);
 
-            // Compute Iris Center & Gaze Vectors
+            const blendshapes = results.faceBlendshapes[0].categories;
+            const eyeLookOutLeft = blendshapes.find((c) => c.categoryName === "eyeLookOutLeft")?.score || 0;
+            const eyeLookInLeft = blendshapes.find((c) => c.categoryName === "eyeLookInLeft")?.score || 0;
+            const eyeLookUpLeft = blendshapes.find((c) => c.categoryName === "eyeLookUpLeft")?.score || 0;
+            const eyeLookDownLeft = blendshapes.find((c) => c.categoryName === "eyeLookDownLeft")?.score || 0;
+            const eyeLookOutRight = blendshapes.find((c) => c.categoryName === "eyeLookOutRight")?.score || 0;
+            const eyeLookInRight = blendshapes.find((c) => c.categoryName === "eyeLookInRight")?.score || 0;
+            const eyeLookUpRight = blendshapes.find((c) => c.categoryName === "eyeLookUpRight")?.score || 0;
+            const eyeLookDownRight = blendshapes.find((c) => c.categoryName === "eyeLookDownRight")?.score || 0;
+
+            // Combine the scores for a normalized gaze vector
+            const normDx = (eyeLookOutLeft - eyeLookInLeft + eyeLookInRight - eyeLookOutRight) / 2;
+            const normDy = (eyeLookUpLeft - eyeLookDownLeft + eyeLookUpRight - eyeLookDownRight) / 2;
+
+            setGazeVector({ dx: normDx, dy: normDy });
+
+            // A simple threshold on the blendshape scores to determine if gaze is aligned
+            const isGazeAligned = Math.abs(normDx) < 0.3 && Math.abs(normDy) < 0.3;
+
+            // Draw Iris Reticles & Gaze Projection Vectors
             const leftIrisPt = pt(LEFT_IRIS);
             const rightIrisPt = pt(RIGHT_IRIS);
 
-            const leftOuterCorner = pt(33);
-            const leftInnerCorner = pt(133);
-            const rightInnerCorner = pt(362);
-            const rightOuterCorner = pt(263);
-
-            // Geometric centers of eyes
-            const leftEyeCenter = {
-              x: (leftOuterCorner.x + leftInnerCorner.x) / 2,
-              y: (leftOuterCorner.y + leftInnerCorner.y) / 2,
-            };
-            const rightEyeCenter = {
-              x: (rightInnerCorner.x + rightOuterCorner.x) / 2,
-              y: (rightInnerCorner.y + rightOuterCorner.y) / 2,
-            };
-
-            // Vector displacement from center
-            const leftDx = leftIrisPt.x - leftEyeCenter.x;
-            const leftDy = leftIrisPt.y - leftEyeCenter.y;
-            const rightDx = rightIrisPt.x - rightEyeCenter.x;
-            const rightDy = rightIrisPt.y - rightEyeCenter.y;
-
-            const avgDx = (leftDx + rightDx) / 2;
-            const avgDy = (leftDy + rightDy) / 2;
-
-            // Normalized gaze vector [-10.0 to +10.0]
-            const eyeSpan = Math.abs(leftInnerCorner.x - leftOuterCorner.x) || 30;
-            const normDx = Math.round((avgDx / eyeSpan) * 20 * 10) / 10;
-            const normDy = Math.round((avgDy / eyeSpan) * 20 * 10) / 10;
-            setGazeVector({ dx: normDx, dy: normDy });
-
-            // Eye Corner Bounding Box Gaze Adherence
-            const isGazeAligned = Math.abs(normDx) <= 2.8 && Math.abs(normDy) <= 3.2;
-
-            // Draw Iris Reticles & Gaze Projection Vectors
             const drawIrisReticle = (center: { x: number; y: number }, dx: number, dy: number) => {
               const reticleColor = isGazeAligned ? "#00FF88" : "#FFB800";
 
@@ -401,7 +418,7 @@ export default function FuturisticFaceTracker({
               ctx.lineWidth = 1;
               ctx.stroke();
 
-              // Projected Gaze Vector Line
+              // Projected Gaze Vector Line (use blendshape-derived dx/dy for direction)
               const vectorLength = 40;
               const angle = Math.atan2(dy, dx);
               const targetX = center.x + Math.cos(angle) * vectorLength;
@@ -422,8 +439,8 @@ export default function FuturisticFaceTracker({
               ctx.fill();
             };
 
-            drawIrisReticle(leftIrisPt, leftDx, leftDy);
-            drawIrisReticle(rightIrisPt, rightDx, rightDy);
+            drawIrisReticle(leftIrisPt, normDx, normDy);
+            drawIrisReticle(rightIrisPt, normDx, normDy);
             ctx.restore();
 
             // -----------------------------------------------------------
@@ -444,36 +461,47 @@ export default function FuturisticFaceTracker({
             setMouthAperture(normalizedAperture);
 
             // -----------------------------------------------------------
-            // E. Head Posture & Stability Telemetry (Landmark 1: Nose Tip)
+            // E. Head Posture & Stability Telemetry (3D Matrix)
             // -----------------------------------------------------------
-            const rawNoseTip = lm[1];
-            const nowTime = performance.now();
-            let currentFrameStable = true;
+            let rawHeadPose = { pitch: 0, yaw: 0, roll: 0 };
+            if (results.facialTransformationMatrixes && results.facialTransformationMatrixes.length > 0) {
+              const matrix = results.facialTransformationMatrixes[0].data;
+              rawHeadPose = decomposeMatrix(matrix);
 
-            if (prevNoseTipRef.current) {
-              const dt = Math.max(0.016, (nowTime - prevNoseTipRef.current.time) / 1000);
-              const dxPixels = (rawNoseTip.x - prevNoseTipRef.current.x) * width;
-              const dyPixels = (rawNoseTip.y - prevNoseTipRef.current.y) * height;
-              const pixelSpeed = Math.hypot(dxPixels, dyPixels) / dt;
+              // Apply exponential moving average for smoothing
+              const smoothing = 0.1;
+              const smoothed = {
+                pitch: smoothedHeadPoseRef.current.pitch * (1 - smoothing) + rawHeadPose.pitch * smoothing,
+                yaw: smoothedHeadPoseRef.current.yaw * (1 - smoothing) + rawHeadPose.yaw * smoothing,
+                roll: smoothedHeadPoseRef.current.roll * (1 - smoothing) + rawHeadPose.roll * smoothing,
+              };
+              smoothedHeadPoseRef.current = smoothed;
+              setHead(smoothed);
 
-              // Moderate velocity threshold: < 85 px/sec indicates stable presentation posture
-              currentFrameStable = pixelSpeed < 85;
+              // Calculate angular velocity for stability check
+              const deltaPitch = Math.abs(smoothed.pitch - lastHeadPoseRef.current.pitch);
+              const deltaYaw = Math.abs(smoothed.yaw - lastHeadPoseRef.current.yaw);
+              const deltaRoll = Math.abs(smoothed.roll - lastHeadPoseRef.current.roll);
+              lastHeadPoseRef.current = smoothed;
+
+              // Threshold for movement; considered stable if change is minor
+              const totalAngularChange = deltaPitch + deltaYaw + deltaRoll;
+              const currentFrameStable = totalAngularChange < 1.2;
+
+              // Rolling window over last 40 frames (~1.3s)
+              stabilityHistoryRef.current.push(currentFrameStable);
+              if (stabilityHistoryRef.current.length > 40) {
+                stabilityHistoryRef.current.shift();
+              }
+
+              const stableCount = stabilityHistoryRef.current.filter(Boolean).length;
+              const currentStabilityRatio = stableCount / Math.max(1, stabilityHistoryRef.current.length);
+              const stableStatus = currentStabilityRatio >= 0.65;
+              const computedStabilityPct = Math.round(currentStabilityRatio * 100) / 100;
+
+              setIsHeadStable(stableStatus);
+              setHeadStabilityPct(computedStabilityPct);
             }
-            prevNoseTipRef.current = { x: rawNoseTip.x, y: rawNoseTip.y, time: nowTime };
-
-            // Rolling window over last 40 frames (~1.3s)
-            stabilityHistoryRef.current.push(currentFrameStable);
-            if (stabilityHistoryRef.current.length > 40) {
-              stabilityHistoryRef.current.shift();
-            }
-
-            const stableCount = stabilityHistoryRef.current.filter(Boolean).length;
-            const currentStabilityRatio = stableCount / Math.max(1, stabilityHistoryRef.current.length);
-            const stableStatus = currentStabilityRatio >= 0.65;
-            const computedStabilityPct = Math.round(currentStabilityRatio * 100) / 100;
-
-            setIsHeadStable(stableStatus);
-            setHeadStabilityPct(computedStabilityPct);
 
             // Push metrics to parent component if callback provided
             if (onMetricsUpdate) {
@@ -481,8 +509,14 @@ export default function FuturisticFaceTracker({
                 mouthAperture: normalizedAperture,
                 gazeAligned: isGazeAligned,
                 gazeVector: { dx: normDx, dy: normDy },
-                isHeadStable: stableStatus,
-                headStabilityPct: computedStabilityPct,
+                isHeadStable: isHeadStable,
+                headStabilityPct: headStabilityPct,
+                head: {
+                  pitch: rawHeadPose.pitch,
+                  yaw: rawHeadPose.yaw,
+                  roll: rawHeadPose.roll,
+                  stabilized: smoothedHeadPoseRef.current,
+                },
               });
             }
           } else {
@@ -620,6 +654,27 @@ export default function FuturisticFaceTracker({
                 }`}
               >
                 {Math.round(headStabilityPct * 100)}%
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center text-[10px] border-b border-cyan-500/20 pb-1">
+              <span className="text-gray-400">HEAD_PITCH:</span>
+              <span className="font-bold font-mono text-emerald-300">
+                {head.pitch.toFixed(1)}°
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center text-[10px] border-b border-cyan-500/20 pb-1">
+              <span className="text-gray-400">HEAD_YAW:</span>
+              <span className="font-bold font-mono text-emerald-300">
+                {head.yaw.toFixed(1)}°
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center text-[10px] border-b border-cyan-500/20 pb-1">
+              <span className="text-gray-400">HEAD_ROLL:</span>
+              <span className="font-bold font-mono text-emerald-300">
+                {head.roll.toFixed(1)}°
               </span>
             </div>
 
