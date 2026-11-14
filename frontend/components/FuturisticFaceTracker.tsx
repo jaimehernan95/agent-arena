@@ -7,6 +7,8 @@ export interface FaceTrackerMetrics {
   mouthAperture: number;
   gazeAligned: boolean;
   gazeVector: { dx: number; dy: number };
+  isHeadStable: boolean;
+  headStabilityPct: number;
 }
 
 interface FuturisticFaceTrackerProps {
@@ -52,14 +54,18 @@ export default function FuturisticFaceTracker({
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [gazeVector, setGazeVector] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
   const [mouthAperture, setMouthAperture] = useState<number>(0);
+  const [isHeadStable, setIsHeadStable] = useState<boolean>(true);
+  const [headStabilityPct, setHeadStabilityPct] = useState<number>(0.95);
   const [cameraReady, setCameraReady] = useState<boolean>(false);
   const [modelReady, setModelReady] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // Performance tracking
+  // Performance & stability tracking
   const frameCountRef = useRef(0);
   const lastFpsUpdateTimeRef = useRef(performance.now());
   const lastVideoTimeRef = useRef(-1);
+  const prevNoseTipRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const stabilityHistoryRef = useRef<boolean[]>([]);
 
   // Pulsing animation phase
   const pulsePhaseRef = useRef(0);
@@ -437,12 +443,46 @@ export default function FuturisticFaceTracker({
             const normalizedAperture = Math.min(1.0, Math.max(0.0, Math.round(rawAperture * 100) / 100));
             setMouthAperture(normalizedAperture);
 
+            // -----------------------------------------------------------
+            // E. Head Posture & Stability Telemetry (Landmark 1: Nose Tip)
+            // -----------------------------------------------------------
+            const rawNoseTip = lm[1];
+            const nowTime = performance.now();
+            let currentFrameStable = true;
+
+            if (prevNoseTipRef.current) {
+              const dt = Math.max(0.016, (nowTime - prevNoseTipRef.current.time) / 1000);
+              const dxPixels = (rawNoseTip.x - prevNoseTipRef.current.x) * width;
+              const dyPixels = (rawNoseTip.y - prevNoseTipRef.current.y) * height;
+              const pixelSpeed = Math.hypot(dxPixels, dyPixels) / dt;
+
+              // Moderate velocity threshold: < 85 px/sec indicates stable presentation posture
+              currentFrameStable = pixelSpeed < 85;
+            }
+            prevNoseTipRef.current = { x: rawNoseTip.x, y: rawNoseTip.y, time: nowTime };
+
+            // Rolling window over last 40 frames (~1.3s)
+            stabilityHistoryRef.current.push(currentFrameStable);
+            if (stabilityHistoryRef.current.length > 40) {
+              stabilityHistoryRef.current.shift();
+            }
+
+            const stableCount = stabilityHistoryRef.current.filter(Boolean).length;
+            const currentStabilityRatio = stableCount / Math.max(1, stabilityHistoryRef.current.length);
+            const stableStatus = currentStabilityRatio >= 0.65;
+            const computedStabilityPct = Math.round(currentStabilityRatio * 100) / 100;
+
+            setIsHeadStable(stableStatus);
+            setHeadStabilityPct(computedStabilityPct);
+
             // Push metrics to parent component if callback provided
             if (onMetricsUpdate) {
               onMetricsUpdate({
                 mouthAperture: normalizedAperture,
                 gazeAligned: isGazeAligned,
                 gazeVector: { dx: normDx, dy: normDy },
+                isHeadStable: stableStatus,
+                headStabilityPct: computedStabilityPct,
               });
             }
           } else {
@@ -541,6 +581,22 @@ export default function FuturisticFaceTracker({
             <span>TRACKING: {isLocked ? "LOCKED" : "SEARCHING"}</span>
           </div>
 
+          {/* Head Stability Status Pill */}
+          <div
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-bold tracking-wider backdrop-blur-md shadow-lg transition-all ${
+              isHeadStable
+                ? "bg-emerald-950/70 border-emerald-500/50 text-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.3)]"
+                : "bg-amber-950/70 border-amber-500/50 text-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)] animate-pulse"
+            }`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isHeadStable ? "bg-emerald-400" : "bg-amber-400 animate-ping"
+              }`}
+            />
+            <span>HEAD STABILITY: {isHeadStable ? "STABLE" : "EXCESSIVE MOTION"}</span>
+          </div>
+
           {/* Telemetry Data Block */}
           <div className="p-2.5 rounded-lg bg-black/60 border border-cyan-500/30 backdrop-blur-md text-cyan-300/90 flex flex-col gap-1 min-w-[150px] shadow-[0_0_15px_rgba(0,0,0,0.6)]">
             <div className="flex justify-between items-center text-[10px] border-b border-cyan-500/20 pb-1">
@@ -553,6 +609,17 @@ export default function FuturisticFaceTracker({
               <span className="font-bold font-mono text-emerald-300">
                 [{gazeVector.dx >= 0 ? `+${gazeVector.dx}` : gazeVector.dx},{" "}
                 {gazeVector.dy >= 0 ? `+${gazeVector.dy}` : gazeVector.dy}]
+              </span>
+            </div>
+
+            <div className="flex justify-between items-center text-[10px] border-b border-cyan-500/20 pb-1">
+              <span className="text-gray-400">HEAD_STABILITY:</span>
+              <span
+                className={`font-bold font-mono ${
+                  isHeadStable ? "text-emerald-300" : "text-amber-400"
+                }`}
+              >
+                {Math.round(headStabilityPct * 100)}%
               </span>
             </div>
 

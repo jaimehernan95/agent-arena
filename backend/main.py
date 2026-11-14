@@ -10,6 +10,10 @@ from models import (
     HistoryResponse,
     AnalyzeSessionRequest,
     AnalyzeSessionResponse,
+    GenerateQuestionsRequest,
+    GenerateQuestionsResponse,
+    AnalyzeGauntletRequest,
+    AnalyzeGauntletResponse,
 )
 from agents.coach_engine import coach_engine
 
@@ -161,6 +165,67 @@ async def analyze_session_endpoint(payload: AnalyzeSessionRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent analysis pipeline error: {str(exc)}"
+        )
+
+
+@app.post(
+    "/api/v1/sessions/generate-questions",
+    response_model=GenerateQuestionsResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Ingestion"]
+)
+async def generate_questions_endpoint(payload: GenerateQuestionsRequest):
+    """
+    Ingest a Job Description, Pitch Deck Outline, or Presentation Syllabus
+    and synthesize 3 progressive simulation questions (Warm-up -> Deep-Dive -> Execution).
+    """
+    try:
+        logger.info("Generating custom questions from ingested context (%d chars) for title: %s", len(payload.context_text), payload.title or payload.role_hint)
+        result = await coach_engine.generate_custom_questions(
+            context_text=payload.context_text,
+            title=payload.title,
+            role_hint=payload.role_hint,
+        )
+        return result
+    except Exception as exc:
+        logger.error("Failed to generate custom questions: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Question generation failed: {str(exc)}"
+        )
+
+
+@app.post(
+    "/api/v1/sessions/analyze-gauntlet",
+    response_model=AnalyzeGauntletResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Analysis"]
+)
+async def analyze_gauntlet_endpoint(payload: AnalyzeGauntletRequest):
+    """
+    Evaluate a complete 3-Question Interview Gauntlet.
+    Calculates stage-by-stage subscores, cumulative overall metrics,
+    episodic comparison, micro-drills, and persists to MongoDB Atlas with 768-dim embeddings.
+    """
+    try:
+        logger.info(
+            "Analyzing multi-stage gauntlet for user '%s', role '%s' with %d stages",
+            payload.user_id,
+            payload.job_title,
+            len(payload.stages)
+        )
+        result = await coach_engine.analyze_gauntlet(
+            user_id=payload.user_id,
+            job_title=payload.job_title,
+            stages=payload.stages,
+            context_text=payload.context_text,
+        )
+        return AnalyzeGauntletResponse(**result)
+    except Exception as exc:
+        logger.error("Gauntlet analysis failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Gauntlet analysis failed: {str(exc)}"
         )
 
 

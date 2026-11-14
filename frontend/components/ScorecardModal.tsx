@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
   X,
   Trophy,
@@ -18,14 +18,23 @@ import {
   HelpCircle,
   Award,
   BookOpen,
+  Layers,
+  ChevronRight,
+  MessageSquare,
 } from "lucide-react";
 
-import { AnalyzeSessionResponse, RecommendedDrill } from "@/types/session";
+import {
+  AnalyzeSessionResponse,
+  AnalyzeGauntletResponse,
+  RecommendedDrill,
+  GauntletStageResult,
+} from "@/types/session";
 
 interface ScorecardModalProps {
   isOpen: boolean;
   onClose: () => void;
-  data: AnalyzeSessionResponse;
+  data?: AnalyzeSessionResponse | null;
+  gauntletData?: AnalyzeGauntletResponse | null;
   onStartDrill: (drill: RecommendedDrill) => void;
   onPracticeAgain: () => void;
 }
@@ -34,30 +43,83 @@ export function ScorecardModal({
   isOpen,
   onClose,
   data,
+  gauntletData,
   onStartDrill,
   onPracticeAgain,
 }: ScorecardModalProps) {
-  if (!isOpen) return null;
+  // Tab index: 0 = Cumulative, 1..N = Stage 1..N
+  const [activeTab, setActiveTab] = useState<number>(0);
 
-  const {
-    scorecard,
-    observable_metrics,
-    recommended_drills,
-    episodic_comparison,
-    job_title,
-    interview_question,
-  } = data;
+  if (!isOpen) return null;
+  if (!data && !gauntletData) return null;
+
+  const isGauntlet = !!gauntletData;
+  const stages: GauntletStageResult[] = gauntletData?.stages || [];
+
+  // Determine current active view data
+  const currentStage: GauntletStageResult | null =
+    isGauntlet && activeTab > 0 && activeTab <= stages.length
+      ? stages[activeTab - 1]
+      : null;
+
+  // Extract metrics based on active tab
+  const scorecard = currentStage
+    ? {
+        overall_score: currentStage.stage_score,
+        delivery_subscore: currentStage.delivery_subscore,
+        content_subscore: currentStage.content_subscore,
+        content_breakdown: currentStage.content_breakdown,
+        strengths: currentStage.strengths,
+        improvements: currentStage.improvements,
+      }
+    : gauntletData
+    ? gauntletData.cumulative_scorecard
+    : data!.scorecard;
+
+  const observableMetrics = currentStage
+    ? currentStage.observable_metrics
+    : gauntletData
+    ? {
+        speaking_rate_wpm: Math.round(
+          stages.reduce((acc, s) => acc + s.observable_metrics.speaking_rate_wpm, 0) /
+            Math.max(1, stages.length)
+        ),
+        pause_count: Math.round(
+          stages.reduce((acc, s) => acc + s.observable_metrics.pause_count, 0) /
+            Math.max(1, stages.length)
+        ),
+        filler_words: stages.reduce((acc, s) => {
+          for (const [w, c] of Object.entries(s.observable_metrics.filler_words)) {
+            acc[w] = (acc[w] || 0) + c;
+          }
+          return acc;
+        }, {} as Record<string, number>),
+        gaze_on_camera_pct:
+          Math.round(
+            (stages.reduce((acc, s) => acc + s.observable_metrics.gaze_on_camera_pct, 0) /
+              Math.max(1, stages.length)) *
+              100
+          ) / 100,
+      }
+    : data!.observable_metrics;
+
+  const jobTitle = gauntletData?.job_title || data?.job_title || "Professional Role";
+  const questionPrompt = currentStage
+    ? currentStage.question
+    : isGauntlet
+    ? `3-Question Gauntlet (${stages.length} Stages Completed)`
+    : data?.interview_question || "Interview Prompt";
+
+  const recommendedDrills = gauntletData?.recommended_drills || data?.recommended_drills || [];
+  const episodicComparison = gauntletData?.episodic_comparison || data?.episodic_comparison;
+
   const { overall_score, strengths, improvements, content_breakdown } = scorecard;
-  const { speaking_rate_wpm, filler_words, gaze_on_camera_pct } = observable_metrics;
+  const { speaking_rate_wpm, filler_words, gaze_on_camera_pct } = observableMetrics;
 
   const deliveryScore =
-    data.delivery_subscore ??
-    scorecard.delivery_subscore ??
-    Math.round(overall_score * 0.4);
+    scorecard.delivery_subscore ?? Math.round(overall_score * 0.4);
   const contentScore =
-    data.content_subscore ??
-    scorecard.content_subscore ??
-    Math.round(overall_score * 0.6);
+    scorecard.content_subscore ?? Math.round(overall_score * 0.6);
 
   const totalFillers = Object.values(filler_words).reduce((a, b) => a + b, 0);
 
@@ -110,7 +172,7 @@ export function ScorecardModal({
   const paceStatus = getPaceStatus(speaking_rate_wpm);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200">
       <div className="relative w-full max-w-3xl my-8 bg-surface rounded-2xl border border-surface-border shadow-2xl overflow-hidden flex flex-col">
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border bg-surface-card/60">
@@ -119,10 +181,15 @@ export function ScorecardModal({
               <Trophy className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-tight">
-                Practice Scorecard
+              <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
+                {isGauntlet ? "Gauntlet Simulation Scorecard" : "Practice Scorecard"}
+                {isGauntlet && (
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                    {stages.length} Stages
+                  </span>
+                )}
               </h2>
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-gray-400 font-mono">
                 Context-Aware Dual-Pillar Evaluation &bull; MongoDB Atlas Memory
               </p>
             </div>
@@ -136,25 +203,81 @@ export function ScorecardModal({
           </button>
         </div>
 
+        {/* Gauntlet Stage Tabs Strip */}
+        {isGauntlet && stages.length > 0 && (
+          <div className="flex items-center gap-1 px-6 pt-3 pb-1 border-b border-surface-border/60 bg-surface-card/30 overflow-x-auto">
+            <button
+              onClick={() => setActiveTab(0)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono transition-all whitespace-nowrap ${
+                activeTab === 0
+                  ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold shadow-sm"
+                  : "text-gray-400 hover:text-white hover:bg-surface-card"
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Cumulative Overview</span>
+            </button>
+
+            {stages.map((stg, i) => {
+              const tabIdx = i + 1;
+              const isSelected = activeTab === tabIdx;
+
+              return (
+                <button
+                  key={stg.stage_number}
+                  onClick={() => setActiveTab(tabIdx)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-mono transition-all whitespace-nowrap ${
+                    isSelected
+                      ? "bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold shadow-sm"
+                      : "text-gray-400 hover:text-white hover:bg-surface-card"
+                  }`}
+                >
+                  <span>Stage {stg.stage_number}</span>
+                  <span
+                    className={`text-[10px] px-1 py-0.2 rounded ${
+                      stg.stage_score >= 80
+                        ? "bg-emerald-500/20 text-emerald-300"
+                        : "bg-surface text-gray-300"
+                    }`}
+                  >
+                    {stg.stage_score}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Modal Scrollable Body */}
-        <div className="p-6 space-y-6 overflow-y-auto max-h-[80vh]">
+        <div className="p-6 space-y-6 overflow-y-auto max-h-[75vh]">
           {/* Target Role & Question Context Banner */}
-          {(job_title || interview_question) && (
-            <div className="p-3.5 rounded-xl bg-surface-card/80 border border-surface-border flex flex-col gap-1.5 text-xs">
-              {job_title && (
-                <div className="flex items-center gap-2 text-cyan-300 font-medium">
-                  <Briefcase className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
-                  <span>Role: <strong className="text-white">{job_title}</strong></span>
-                </div>
-              )}
-              {interview_question && (
-                <div className="flex items-start gap-2 text-gray-300">
-                  <HelpCircle className="w-3.5 h-3.5 text-sky-400 flex-shrink-0 mt-0.5" />
-                  <span>Prompt: <strong className="text-gray-100 italic">&ldquo;{interview_question}&rdquo;</strong></span>
-                </div>
-              )}
+          <div className="p-3.5 rounded-xl bg-surface-card/80 border border-surface-border flex flex-col gap-1.5 text-xs">
+            <div className="flex items-center gap-2 text-cyan-300 font-medium font-mono">
+              <Briefcase className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0" />
+              <span>
+                Target Role: <strong className="text-white">{jobTitle}</strong>
+              </span>
             </div>
-          )}
+            <div className="flex items-start gap-2 text-gray-300">
+              <HelpCircle className="w-3.5 h-3.5 text-sky-400 flex-shrink-0 mt-0.5" />
+              <span>
+                Prompt: <strong className="text-gray-100 italic">&ldquo;{questionPrompt}&rdquo;</strong>
+              </span>
+            </div>
+
+            {/* Candidate Transcript if viewing individual stage */}
+            {currentStage && currentStage.transcript && (
+              <div className="mt-2 pt-2 border-t border-surface-border/40">
+                <span className="text-[10px] font-mono text-gray-400 flex items-center gap-1 mb-1">
+                  <MessageSquare className="w-3 h-3 text-purple-400" />
+                  CANDIDATE TRANSCRIBED RESPONSE ({currentStage.transcript.split(/\s+/).length} words):
+                </span>
+                <p className="text-xs text-gray-300 bg-surface/80 p-2.5 rounded-lg border border-surface-border/50 italic leading-relaxed">
+                  &ldquo;{currentStage.transcript}&rdquo;
+                </p>
+              </div>
+            )}
+          </div>
 
           {/* Top Section: Overall Score Gauge & Dual-Pillar Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
@@ -189,7 +312,7 @@ export function ScorecardModal({
                     {overall_score}
                   </span>
                   <span className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold">
-                    Overall / 100
+                    {currentStage ? `Stage ${currentStage.stage_number}` : "Overall"}
                   </span>
                 </div>
               </div>
@@ -227,7 +350,7 @@ export function ScorecardModal({
                     {deliveryScore} <span className="text-xs text-gray-400 font-normal">/ 40</span>
                   </div>
                   <p className="text-[11px] text-gray-400 mt-1">
-                    Pacing, Eye-Contact Gaze, Verbal Fillers &amp; Pause Cadence
+                    Pacing, Eye-Contact Gaze, Verbal Fillers &amp; Cadence
                   </p>
                 </div>
 
@@ -255,7 +378,7 @@ export function ScorecardModal({
                     {contentScore} <span className="text-xs text-gray-400 font-normal">/ 60</span>
                   </div>
                   <p className="text-[11px] text-gray-400 mt-1">
-                    Question Relevance, STAR Framework, Domain Depth
+                    Relevance, STAR Framework, Domain Depth
                   </p>
                 </div>
 
@@ -267,25 +390,28 @@ export function ScorecardModal({
                 </div>
               </div>
 
-              {/* Content Breakdown Progress Bars if available */}
+              {/* Content Breakdown Progress Bars */}
               {content_breakdown && (
                 <div className="sm:col-span-2 p-3 rounded-lg bg-surface/80 border border-surface-border/60 grid grid-cols-3 gap-3 text-center">
                   <div>
-                    <div className="text-[10px] text-gray-400">Relevance</div>
+                    <div className="text-[10px] text-gray-400 font-mono">Relevance</div>
                     <div className="text-sm font-bold font-mono text-purple-300 mt-0.5">
-                      {content_breakdown.relevance_score}<span className="text-[10px] text-gray-400">/25</span>
+                      {content_breakdown.relevance_score}
+                      <span className="text-[10px] text-gray-400">/25</span>
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-gray-400">STAR Structure</div>
+                    <div className="text-[10px] text-gray-400 font-mono">STAR Structure</div>
                     <div className="text-sm font-bold font-mono text-purple-300 mt-0.5">
-                      {content_breakdown.structure_score}<span className="text-[10px] text-gray-400">/20</span>
+                      {content_breakdown.structure_score}
+                      <span className="text-[10px] text-gray-400">/20</span>
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-gray-400">Domain Depth</div>
+                    <div className="text-[10px] text-gray-400 font-mono">Domain Depth</div>
                     <div className="text-sm font-bold font-mono text-purple-300 mt-0.5">
-                      {content_breakdown.domain_depth_score}<span className="text-[10px] text-gray-400">/15</span>
+                      {content_breakdown.domain_depth_score}
+                      <span className="text-[10px] text-gray-400">/15</span>
                     </div>
                   </div>
                 </div>
@@ -334,7 +460,7 @@ export function ScorecardModal({
               <p className="text-[10px] text-gray-400">Benchmark: &ge;80% camera lens lock</p>
             </div>
 
-            {/* Filler Word Tally & Tag List */}
+            {/* Filler Word Tally */}
             <div className="p-3.5 rounded-xl bg-surface-card border border-surface-border/60">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="text-xs text-gray-400 flex items-center gap-1.5">
@@ -385,13 +511,13 @@ export function ScorecardModal({
               </div>
             </div>
 
-            {episodic_comparison ? (
-              <div className="p-3.5 rounded-xl bg-black/40 border border-surface-border/60 text-xs text-cyan-200 leading-relaxed">
-                {episodic_comparison}
+            {episodicComparison ? (
+              <div className="p-3.5 rounded-xl bg-black/40 border border-surface-border/60 text-xs text-cyan-200 leading-relaxed font-mono">
+                {episodicComparison}
               </div>
             ) : (
-              <div className="p-3.5 rounded-xl bg-black/40 border border-surface-border/60 text-xs text-gray-400">
-                Baseline practice session logged. Subsequent sessions will automatically highlight your progression trends.
+              <div className="p-3.5 rounded-xl bg-black/40 border border-surface-border/60 text-xs text-gray-400 font-mono">
+                Baseline practice established. Future sessions will highlight your multi-stage progression.
               </div>
             )}
 
@@ -433,47 +559,49 @@ export function ScorecardModal({
             </div>
           </div>
 
-          {/* Recommended 30-Second Micro-Drills */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-cyan-400" />
-                Personalized 30-Second Micro-Drills
-              </h3>
-              <span className="text-[11px] text-gray-400">Targeting Detected Weaknesses</span>
-            </div>
+          {/* Recommended Micro-Drills (On Cumulative Overview) */}
+          {activeTab === 0 && recommendedDrills.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-cyan-400" />
+                  Personalized 30-Second Micro-Drills
+                </h3>
+                <span className="text-[11px] text-gray-400 font-mono">Targeting Weaknesses</span>
+              </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {recommended_drills.map((drill, index) => (
-                <div
-                  key={index}
-                  className="p-4 rounded-xl bg-surface-card border border-surface-border hover:border-cyan-400/40 transition-all flex flex-col justify-between group"
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-xs font-bold text-white group-hover:text-cyan-400 transition-colors">
-                        {drill.title}
-                      </h4>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-                        {drill.duration_sec}s
-                      </span>
-                    </div>
-                    <p className="text-xs text-gray-400 leading-relaxed mb-4">
-                      {drill.instructions}
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => onStartDrill(drill)}
-                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-cyan-500/10 hover:bg-cyan-400 text-cyan-300 hover:text-gray-950 border border-cyan-500/20 text-xs font-semibold transition-all"
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {recommendedDrills.map((drill, index) => (
+                  <div
+                    key={index}
+                    className="p-4 rounded-xl bg-surface-card border border-surface-border hover:border-cyan-400/40 transition-all flex flex-col justify-between group"
                   >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    Start 30s Drill
-                  </button>
-                </div>
-              ))}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-xs font-bold text-white group-hover:text-cyan-400 transition-colors">
+                          {drill.title}
+                        </h4>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                          {drill.duration_sec}s
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 leading-relaxed mb-4">
+                        {drill.instructions}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => onStartDrill(drill)}
+                      className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-cyan-500/10 hover:bg-cyan-400 text-cyan-300 hover:text-gray-950 border border-cyan-500/20 text-xs font-semibold transition-all font-mono"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      Start 30s Drill
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Responsible AI Guarantee Badge */}
           <div className="p-4 rounded-xl bg-surface-card/60 border border-surface-border/80 flex items-start gap-3">
@@ -485,7 +613,9 @@ export function ScorecardModal({
                 Responsible AI Guarantee
               </h4>
               <p className="text-[11px] text-gray-400 mt-0.5 leading-relaxed">
-                Raw video is never transmitted or stored. Analysis is derived entirely on-device via WebAssembly and focuses exclusively on observable presentation signals and structured content quality—never diagnosing emotions, nervousness, or psychological states.
+                Raw video is never transmitted or stored. Analysis is derived entirely on-device via WebAssembly
+                and focuses exclusively on observable presentation signals and structured content quality—never
+                diagnosing emotions, nervousness, or psychological states.
               </p>
             </div>
           </div>
@@ -495,17 +625,17 @@ export function ScorecardModal({
         <div className="flex items-center justify-between px-6 py-4 border-t border-surface-border bg-surface-card/60">
           <button
             onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white transition-colors"
+            className="px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white transition-colors font-mono"
           >
             Close
           </button>
 
           <button
             onClick={onPracticeAgain}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-gray-950 font-bold text-xs transition-all shadow-md shadow-cyan-500/20"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-400 hover:bg-cyan-300 text-gray-950 font-bold text-xs transition-all shadow-md shadow-cyan-500/20 font-mono"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            Practice Again (60s)
+            {isGauntlet ? "Start New Gauntlet (3 Stages)" : "Practice Again (60s)"}
           </button>
         </div>
       </div>

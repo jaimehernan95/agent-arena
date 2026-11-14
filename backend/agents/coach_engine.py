@@ -17,6 +17,11 @@ from models import (
     Scorecard,
     UserSession,
     ContentBreakdown,
+    GeneratedQuestion,
+    GenerateQuestionsResponse,
+    GauntletStageInput,
+    GauntletStageResult,
+    AnalyzeGauntletResponse,
 )
 
 logger = logging.getLogger("mirror.agents.coach_engine")
@@ -93,14 +98,22 @@ def calculate_delivery_score(metrics: ObservableMetrics) -> int:
         pause_deduction = min(10.0, (metrics.pause_count - 3) * 2.0)
     score -= pause_deduction
 
+    # 5. Head Posture Stability (Target >= 70% stable, minor jitter deduction)
+    stability = getattr(metrics, "head_stability_pct", 0.90) or 0.90
+    stability_deduction = 0.0
+    if stability < 0.70:
+        stability_deduction = min(3.0, (0.70 - stability) * 10.0)
+    score -= stability_deduction
+
     clamped_delivery = max(10, min(40, round(score)))
     logger.info(
-        "Delivery Score: %d/40 (Fillers: -%.1f, WPM: -%.1f, Gaze: -%.1f, Pauses: -%.1f)",
+        "Delivery Score: %d/40 (Fillers: -%.1f, WPM: -%.1f, Gaze: -%.1f, Pauses: -%.1f, HeadStability: -%.1f)",
         clamped_delivery,
         filler_deduction,
         wpm_deduction,
         gaze_deduction,
         pause_deduction,
+        stability_deduction,
     )
     return int(clamped_delivery)
 
@@ -597,6 +610,350 @@ class CoachEngine:
             "content_subscore": content_score,
             "content_breakdown": content_breakdown,
         }
+
+    # -------------------------------------------------------------------------
+    # Ingestion Engine: Custom Job Description & Syllabus Question Generation
+    # -------------------------------------------------------------------------
+    async def generate_custom_questions(
+        self,
+        context_text: str,
+        title: Optional[str] = None,
+        role_hint: Optional[str] = None,
+    ) -> GenerateQuestionsResponse:
+        """
+        Use Gemini to analyze any Job Description, Pitch Deck, or Presentation Outline
+        and synthesize 3 progressive questions tailored to the domain:
+        1. Warm-up / Thesis statement (30-60s)
+        2. Deep Dive / Execution & Trade-offs (60s)
+        3. Conflict, Risk, or Impact Resolution (60s)
+        """
+        target_role = title or role_hint or "Universal Professional Simulation"
+
+        system_instruction = (
+            "You are the Lead Presentation, Pitch & Interview Curriculum Architect for Mirror.\n"
+            f"Analyze the context for target simulation: '{target_role}'.\n"
+            "Generate exactly 3 progressive simulation questions matching this specific domain/presentation:\n"
+            "1. Warm-up / Thesis statement (30-60s): Foundational intro, motivation, or opening thesis.\n"
+            "2. Deep Dive / Execution & Trade-offs (60s): Complex technical, operational, or strategic trade-offs.\n"
+            "3. Conflict, Risk, or Impact Resolution (60s): Crisis mitigation, risk exposure, stakeholder alignment, or bottom-line impact.\n\n"
+            "Return valid JSON strictly matching:\n"
+            "{\n"
+            f'  "target_title": "{target_role}",\n'
+            f'  "role_inferred": "{target_role}",\n'
+            '  "context_summary": "1 concise sentence summarizing key domain challenge",\n'
+            '  "questions": [\n'
+            "    {\n"
+            '      "id": 1,\n'
+            '      "stage_number": 1,\n'
+            '      "text": "...",\n'
+            '      "target_focus": "Warm-up / Thesis Statement",\n'
+            '      "targetRubric": "TARGET: THESIS STATEMENT | FOUNDATIONAL HOOK",\n'
+            '      "difficulty": "Warm-up"\n'
+            "    },\n"
+            "    {\n"
+            '      "id": 2,\n'
+            '      "stage_number": 2,\n'
+            '      "text": "...",\n'
+            '      "target_focus": "Execution & Trade-offs",\n'
+            '      "targetRubric": "TARGET: EXECUTION RIGOR | QUANTITATIVE TRADEOFFS",\n'
+            '      "difficulty": "Deep-Dive"\n'
+            "    },\n"
+            "    {\n"
+            '      "id": 3,\n'
+            '      "stage_number": 3,\n'
+            '      "text": "...",\n'
+            '      "target_focus": "Conflict, Risk & Impact Resolution",\n'
+            '      "targetRubric": "TARGET: RISK RESOLUTION | MEASURABLE OUTCOMES",\n'
+            '      "difficulty": "Execution"\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+
+        user_content = (
+            f"Target Simulation Title / Role: {target_role}\n\n"
+            f"Context / Job Description / Deck Outline:\n\"\"\"{context_text[:5000]}\"\"\""
+        )
+
+        if self.client:
+            for model_name in [self.primary_model, self.fallback_model, "gemini-3.8-flash"]:
+                try:
+                    response = await self.client.aio.models.generate_content(
+                        model=model_name,
+                        contents=[system_instruction, user_content],
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.3,
+                        ),
+                    )
+                    parsed = json.loads(response.text)
+                    role = parsed.get("target_title") or parsed.get("role_inferred") or target_role
+                    summary = parsed.get("context_summary") or f"Simulation customized for {role}."
+                    raw_questions = parsed.get("questions", [])
+
+                    questions: List[GeneratedQuestion] = []
+                    for idx, q in enumerate(raw_questions[:3]):
+                        stage_num = idx + 1
+                        default_focuses = [
+                            "Warm-up / Thesis Statement",
+                            "Execution & Trade-offs",
+                            "Conflict, Risk & Impact Resolution",
+                        ]
+                        default_rubrics = [
+                            "TARGET: THESIS STATEMENT | FOUNDATIONAL HOOK",
+                            "TARGET: EXECUTION RIGOR | QUANTITATIVE TRADEOFFS",
+                            "TARGET: RISK RESOLUTION | MEASURABLE OUTCOMES",
+                        ]
+                        questions.append(
+                            GeneratedQuestion(
+                                id=q.get("id", stage_num),
+                                stage_number=int(q.get("stage_number", stage_num)),
+                                text=q.get("text", f"Question {stage_num}"),
+                                target_focus=q.get("target_focus", default_focuses[idx]),
+                                targetRubric=q.get("targetRubric", default_rubrics[idx]),
+                                difficulty=q.get("difficulty", ["Warm-up", "Deep-Dive", "Execution"][min(idx, 2)]),
+                            )
+                        )
+
+                    if len(questions) == 3:
+                        logger.info("Generated 3 tailored questions via Gemini for title: %s", role)
+                        return GenerateQuestionsResponse(
+                            role_inferred=role,
+                            target_title=role,
+                            context_summary=summary,
+                            questions=questions,
+                        )
+                except Exception as exc:
+                    logger.warning("Gemini question generation with %s failed: %s", model_name, exc)
+
+        # Fallback question generation
+        logger.info("Using deterministic fallback question generation for custom context.")
+        fallback_questions = [
+            GeneratedQuestion(
+                id=1,
+                stage_number=1,
+                text=f"Present your opening thesis statement and how your core approach addresses the primary objective of this {target_role} presentation.",
+                target_focus="Warm-up / Thesis Statement",
+                targetRubric="TARGET: THESIS STATEMENT | VALUE PROPOSITION",
+                difficulty="Warm-up",
+            ),
+            GeneratedQuestion(
+                id=2,
+                stage_number=2,
+                text="Dive into the execution strategy: what complex operational or technical trade-offs were required to deliver on these goals?",
+                target_focus="Execution & Trade-offs",
+                targetRubric="TARGET: ARCHITECTURAL TRADEOFFS | EXECUTION DEPTH",
+                difficulty="Deep-Dive",
+            ),
+            GeneratedQuestion(
+                id=3,
+                stage_number=3,
+                text="Describe a critical risk or conflict scenario that emerged during this work and how you successfully navigated team alignment and mitigated downside impact.",
+                target_focus="Conflict, Risk & Impact Resolution",
+                targetRubric="TARGET: RISK RESOLUTION | MEASURABLE IMPACT",
+                difficulty="Execution",
+            ),
+        ]
+        return GenerateQuestionsResponse(
+            role_inferred=target_role,
+            target_title=target_role,
+            context_summary=f"Custom simulation prepared for {target_role}.",
+            questions=fallback_questions,
+        )
+
+    # -------------------------------------------------------------------------
+    # Multi-Stage Interview Gauntlet Analysis
+    # -------------------------------------------------------------------------
+    async def analyze_gauntlet(
+        self,
+        user_id: str,
+        job_title: str,
+        stages: List[GauntletStageInput],
+        context_text: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate a complete multi-question interview gauntlet:
+        1. Evaluates each stage (delivery, content, floor gate).
+        2. Computes a cumulative scorecard across the entire session.
+        3. Retrieves episodic past history and calculates progression.
+        4. Generates targeted drills and 768-dim vector embedding.
+        5. Persists the multi-stage document to MongoDB Atlas.
+        """
+        now = datetime.now(timezone.utc)
+        final_session_id = os.urandom(16).hex()
+
+        stage_results: List[GauntletStageResult] = []
+        combined_strengths: List[str] = []
+        combined_improvements: List[str] = []
+
+        total_words_all_stages = 0
+        sum_delivery = 0
+        sum_content = 0
+        sum_total_score = 0
+        sum_relevance = 0
+        sum_structure = 0
+        sum_depth = 0
+
+        # 1. Evaluate individual stages
+        for stage in stages:
+            delivery_score = calculate_delivery_score(stage.observable_metrics)
+            content_score, content_breakdown, strengths, improvements = (
+                await self.run_content_critic_agent(
+                    transcript=stage.transcript,
+                    job_title=job_title,
+                    interview_question=stage.question,
+                )
+            )
+
+            word_count = len(stage.transcript.strip().split())
+            total_words_all_stages += word_count
+
+            # Hard Floor Gate constraint per stage:
+            if word_count < 25:
+                stage_score = min(50, round(delivery_score + content_score))
+            else:
+                stage_score = max(40, min(98, round(delivery_score + content_score)))
+
+            sum_delivery += delivery_score
+            sum_content += content_score
+            sum_total_score += stage_score
+            sum_relevance += content_breakdown.relevance_score
+            sum_structure += content_breakdown.structure_score
+            sum_depth += content_breakdown.domain_depth_score
+
+            combined_strengths.extend(strengths)
+            combined_improvements.extend(improvements)
+
+            stage_results.append(
+                GauntletStageResult(
+                    stage_number=stage.stage_number,
+                    question=stage.question,
+                    transcript=stage.transcript,
+                    observable_metrics=stage.observable_metrics,
+                    delivery_subscore=delivery_score,
+                    content_subscore=content_score,
+                    content_breakdown=content_breakdown,
+                    stage_score=stage_score,
+                    strengths=strengths,
+                    improvements=improvements,
+                )
+            )
+
+        num_stages = max(1, len(stages))
+        avg_delivery = round(sum_delivery / num_stages)
+        avg_content = round(sum_content / num_stages)
+        avg_overall = round(sum_total_score / num_stages)
+
+        avg_breakdown = ContentBreakdown(
+            relevance_score=min(25, round(sum_relevance / num_stages)),
+            structure_score=min(20, round(sum_structure / num_stages)),
+            domain_depth_score=min(15, round(sum_depth / num_stages)),
+        )
+
+        # Average Observable Metrics across stages
+        avg_metrics = ObservableMetrics(
+            speaking_rate_wpm=round(
+                sum(s.observable_metrics.speaking_rate_wpm for s in stages) / num_stages, 1
+            ),
+            pause_count=round(
+                sum(s.observable_metrics.pause_count for s in stages) / num_stages
+            ),
+            filler_words={
+                "um": sum(s.observable_metrics.filler_words.get("um", 0) for s in stages),
+                "like": sum(s.observable_metrics.filler_words.get("like", 0) for s in stages),
+            },
+            gaze_on_camera_pct=round(
+                sum(s.observable_metrics.gaze_on_camera_pct for s in stages) / num_stages, 2
+            ),
+        )
+
+        # Clean, unique strengths and improvements
+        unique_strengths = list(dict.fromkeys(combined_strengths))[:4]
+        unique_improvements = list(dict.fromkeys(combined_improvements))[:4]
+
+        # 2. Episodic comparison
+        past_session = await self.retrieve_most_recent_session(user_id=user_id)
+        coach_output = await self.run_coach_agent_with_memory(
+            current_metrics=avg_metrics,
+            current_delivery=avg_delivery,
+            current_content=avg_content,
+            current_total=avg_overall,
+            past_session=past_session,
+            content_strengths=unique_strengths,
+            content_improvements=unique_improvements,
+        )
+
+        # 3. Micro-drills
+        drills = await self.run_drill_generator(
+            metrics=avg_metrics,
+            delivery_score=avg_delivery,
+            content_score=avg_content,
+            content_breakdown=avg_breakdown,
+        )
+
+        cumulative_scorecard = Scorecard(
+            strengths=coach_output["strengths"] if coach_output.get("strengths") else unique_strengths,
+            improvements=coach_output["improvements"] if coach_output.get("improvements") else unique_improvements,
+            overall_score=avg_overall,
+            delivery_subscore=avg_delivery,
+            content_subscore=avg_content,
+            content_breakdown=avg_breakdown,
+        )
+
+        # 4. Atlas Vector Embedding (768-dim)
+        critique_summary = (
+            f"Gauntlet Role: {job_title}. Stages: {num_stages}. "
+            f"Overall Score: {avg_overall} (Delivery: {avg_delivery}/40, Content: {avg_content}/60). "
+            f"Pacing: {avg_metrics.speaking_rate_wpm} WPM. Gaze: {round(avg_metrics.gaze_on_camera_pct * 100, 1)}%. "
+            f"Strengths: {' '.join(cumulative_scorecard.strengths)}. Improvements: {' '.join(cumulative_scorecard.improvements)}. "
+            f"Episodic: {coach_output.get('episodic_comparison', '')}"
+        )
+        embedding_vector = await self.generate_critique_embedding(critique_summary)
+
+        # Full UserSession document for MongoDB Atlas
+        full_transcript = " \n---\n ".join(
+            f"[Stage {s.stage_number}]: {s.transcript}" for s in stages
+        )
+        session_doc = UserSession(
+            session_id=final_session_id,
+            user_id=user_id,
+            job_title=job_title,
+            interview_question=f"3-Question Gauntlet ({num_stages} Stages)",
+            is_gauntlet=True,
+            context_text=context_text,
+            stages=[s.model_dump() for s in stage_results],
+            created_at=now,
+            transcript=full_transcript,
+            observable_metrics=avg_metrics,
+            delivery_subscore=avg_delivery,
+            content_subscore=avg_content,
+            scorecard=cumulative_scorecard,
+            recommended_drills=drills,
+            embedding=embedding_vector,
+        )
+
+        # 5. Persist into MongoDB Atlas sessions collection
+        try:
+            sessions_col = get_collection("sessions")
+            doc_dict = session_doc.model_dump(by_alias=True)
+            await sessions_col.insert_one(doc_dict)
+            logger.info("Persisted completed gauntlet session %s to MongoDB Atlas.", final_session_id)
+        except Exception as exc:
+            logger.error("Failed to write gauntlet session to MongoDB Atlas: %s", exc)
+            raise exc
+
+        return {
+            "session_id": final_session_id,
+            "user_id": user_id,
+            "job_title": job_title,
+            "context_text": context_text,
+            "created_at": now,
+            "stages": stage_results,
+            "cumulative_scorecard": cumulative_scorecard,
+            "recommended_drills": drills,
+            "episodic_comparison": coach_output.get("episodic_comparison"),
+        }
+
 
 
 # Global singleton

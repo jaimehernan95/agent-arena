@@ -23,6 +23,7 @@ interface FlightComputerTelemetryProps {
   isPracticing: boolean;
   targetRole: string;
   targetRubric: string;
+  headStabilityPct?: number;
 }
 
 export function FlightComputerTelemetry({
@@ -34,6 +35,7 @@ export function FlightComputerTelemetry({
   isPracticing,
   targetRole,
   targetRubric,
+  headStabilityPct = 0.95,
 }: FlightComputerTelemetryProps) {
   // Total fillers tally
   const totalFillers = Object.values(fillerWords).reduce((a, b) => a + b, 0);
@@ -102,9 +104,20 @@ export function FlightComputerTelemetry({
               Flight Computer <span className="text-cyan-400">// Telemetry</span>
             </h3>
           </div>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">
-            {isPracticing ? "ACTIVE INFERENCE" : "STANDBY"}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300">
+              {isPracticing ? "ACTIVE INFERENCE" : "STANDBY"}
+            </span>
+            <span
+              className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                headStabilityPct >= 0.7
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-300 animate-pulse"
+              }`}
+            >
+              POSTURE: {Math.round(headStabilityPct * 100)}%
+            </span>
+          </div>
         </div>
 
         {/* Live Flash Alert when filler word is uttered */}

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
@@ -16,6 +16,12 @@ class ObservableMetrics(BaseModel):
         ge=0.0,
         le=1.0,
         description="Percentage of session with gaze locked on camera (0.0 to 1.0)"
+    )
+    head_stability_pct: Optional[float] = Field(
+        default=0.92,
+        ge=0.0,
+        le=1.0,
+        description="Percentage of session with stable head posture without excessive jitter"
     )
 
     model_config = ConfigDict(extra="ignore")
@@ -56,6 +62,10 @@ class UserSession(BaseModel):
     user_id: str = Field(..., description="Identifier for the user")
     job_title: Optional[str] = Field("Senior AI/Software Engineer", description="Target job title / role")
     interview_question: Optional[str] = Field(None, description="Target interview question")
+    is_gauntlet: Optional[bool] = Field(default=False, description="Whether this session was a multi-stage gauntlet")
+    context_text: Optional[str] = Field(default=None, description="Optional custom job description or presentation context")
+    stages: Optional[List[Dict[str, Any]]] = Field(default=None, description="Stages for multi-question gauntlet")
+    generated_questions: Optional[List[Dict[str, Any]]] = Field(default=None, description="Generated simulation questions")
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp when practice session was recorded"
@@ -91,6 +101,73 @@ class UserSession(BaseModel):
         populate_by_name=True,
         json_encoders={datetime: lambda dt: dt.isoformat()}
     )
+
+
+class GenerateQuestionsRequest(BaseModel):
+    title: Optional[str] = Field(default=None, description="Target Title / Role (e.g., MBA Capstone Pitch, Healthcare Claims Specialist)")
+    context_text: str = Field(..., max_length=15000, description="Pasted Job Description, pitch outline, or syllabus text")
+    role_hint: Optional[str] = Field(default=None, description="Optional target role or title hint")
+
+
+class GeneratedQuestion(BaseModel):
+    id: Any = Field(default=1, description="Question ID or number")
+    stage_number: Optional[int] = Field(default=1, description="Stage index 1, 2, or 3")
+    text: str = Field(..., description="Prompt question text")
+    target_focus: Optional[str] = Field(default=None, description="Target focus area")
+    targetRubric: Optional[str] = Field(default=None, description="Target evaluation rubric")
+    difficulty: Optional[str] = Field(default="Standard", description="Warm-up, Deep-Dive, or Execution")
+
+
+class GenerateQuestionsResponse(BaseModel):
+    role_inferred: Optional[str] = None
+    target_title: Optional[str] = None
+    context_summary: Optional[str] = None
+    questions: List[GeneratedQuestion]
+
+
+class GauntletStageInput(BaseModel):
+    stage_number: int
+    question: str
+    transcript: str
+    observable_metrics: ObservableMetrics
+
+
+class GauntletStageResult(BaseModel):
+    stage_number: int
+    question: str
+    transcript: str
+    observable_metrics: ObservableMetrics
+    delivery_subscore: int
+    content_subscore: int
+    content_breakdown: Optional[ContentBreakdown] = None
+    stage_score: int
+    strengths: List[str]
+    improvements: List[str]
+
+
+class AnalyzeGauntletRequest(BaseModel):
+    user_id: str
+    job_title: str
+    context_text: Optional[str] = None
+    stages: List[GauntletStageInput]
+
+
+class AnalyzeGauntletResponse(BaseModel):
+    session_id: str
+    user_id: str
+    job_title: str
+    context_text: Optional[str] = None
+    created_at: datetime
+    stages: List[GauntletStageResult]
+    cumulative_scorecard: Scorecard
+    recommended_drills: List[RecommendedDrill]
+    episodic_comparison: Optional[str] = None
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={datetime: lambda dt: dt.isoformat()}
+    )
+
 
 
 class HistoryResponse(BaseModel):
@@ -141,3 +218,70 @@ class AnalyzeSessionResponse(BaseModel):
         populate_by_name=True,
         json_encoders={datetime: lambda dt: dt.isoformat()}
     )
+
+
+class GenerateQuestionsRequest(BaseModel):
+    title: Optional[str] = Field(default=None, description="Target Title / Role (e.g., MBA Capstone Pitch, Healthcare Claims Specialist)")
+    context_text: str = Field(..., max_length=15000, description="Pasted Job Description, pitch outline, or syllabus text")
+    role_hint: Optional[str] = Field(default=None, description="Optional target role or title hint")
+
+
+class GeneratedQuestion(BaseModel):
+    id: Any = Field(default=1, description="Question ID or number")
+    stage_number: Optional[int] = Field(default=1, description="Stage index 1, 2, or 3")
+    text: str = Field(..., description="Prompt question text")
+    target_focus: Optional[str] = Field(default=None, description="Target focus area")
+    targetRubric: Optional[str] = Field(default=None, description="Target evaluation rubric")
+    difficulty: Optional[str] = Field(default="Standard", description="Warm-up, Deep-Dive, or Execution")
+
+
+class GenerateQuestionsResponse(BaseModel):
+    role_inferred: Optional[str] = None
+    target_title: Optional[str] = None
+    context_summary: Optional[str] = None
+    questions: List[GeneratedQuestion]
+
+
+class GauntletStageInput(BaseModel):
+    stage_number: int
+    question: str
+    transcript: str
+    observable_metrics: ObservableMetrics
+
+
+class GauntletStageResult(BaseModel):
+    stage_number: int
+    question: str
+    transcript: str
+    observable_metrics: ObservableMetrics
+    delivery_subscore: int
+    content_subscore: int
+    content_breakdown: Optional[ContentBreakdown] = None
+    stage_score: int
+    strengths: List[str]
+    improvements: List[str]
+
+
+class AnalyzeGauntletRequest(BaseModel):
+    user_id: str
+    job_title: str
+    context_text: Optional[str] = None
+    stages: List[GauntletStageInput]
+
+
+class AnalyzeGauntletResponse(BaseModel):
+    session_id: str
+    user_id: str
+    job_title: str
+    context_text: Optional[str] = None
+    created_at: datetime
+    stages: List[GauntletStageResult]
+    cumulative_scorecard: Scorecard
+    recommended_drills: List[RecommendedDrill]
+    episodic_comparison: Optional[str] = None
+
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_encoders={datetime: lambda dt: dt.isoformat()}
+    )
+

@@ -137,8 +137,81 @@ async def main():
     assert len(emb) == 768
     print("   ✓ 768-dim Atlas Vector search embedding confirmed.\n")
 
+    # 8. Test Ingestion Engine: Custom Question Generation
+    print("8. Testing Ingestion Engine (generate_custom_questions):")
+    sample_jd = (
+        "We are hiring a Principal AI Platform Engineer to build high-throughput real-time multimodal inference pipelines "
+        "using FastAPI, Google Gemini, and MongoDB Atlas Vector Search. Responsibilities include sub-second p99 latency SLA, "
+        "incident response for production microservices, and leading distributed architecture reviews."
+    )
+    gen_result = await coach_engine.generate_custom_questions(sample_jd, role_hint="Principal AI Platform Engineer")
+    print(f"   Inferred Role: {gen_result.role_inferred}")
+    print(f"   Context Summary: {gen_result.context_summary}")
+    print(f"   Questions Generated ({len(gen_result.questions)}):")
+    for q in gen_result.questions:
+        print(f"     - [Stage {q.stage_number} | {q.difficulty}]: {q.text[:65]}...")
+    assert len(gen_result.questions) == 3
+    print("   ✓ Ingestion Engine generated 3 tailored progressive questions.\n")
+
+    # 9. Test Multi-Stage Gauntlet Analysis
+    print("9. Testing 3-Question Interview Gauntlet Analysis:")
+    from models import GauntletStageInput
+    gauntlet_stages = [
+        GauntletStageInput(
+            stage_number=1,
+            question=gen_result.questions[0].text,
+            transcript="I have over seven years of engineering experience architecting and scaling distributed multimodal microservices, optimizing low-latency inference pipelines, and deploying containerized models across hybrid Kubernetes clusters.",
+            observable_metrics=ObservableMetrics(
+                speaking_rate_wpm=138.0,
+                pause_count=1,
+                filler_words={},
+                gaze_on_camera_pct=0.86,
+            ),
+        ),
+        GauntletStageInput(
+            stage_number=2,
+            question=gen_result.questions[1].text,
+            transcript="When designing our vector search architecture, we benchmarked MongoDB Atlas 768-dim embeddings against dedicated vector pods. We achieved sub-50ms query latency while reducing operational overhead by forty percent and maintaining linear read scaling.",
+            observable_metrics=ObservableMetrics(
+                speaking_rate_wpm=145.0,
+                pause_count=2,
+                filler_words={"um": 1},
+                gaze_on_camera_pct=0.89,
+            ),
+        ),
+        GauntletStageInput(
+            stage_number=3,
+            question=gen_result.questions[2].text,
+            transcript="During a critical production incident at two in the morning, I rapidly triaged MongoDB connection timeouts using Atlas real-time monitoring and introduced Redis caching to protect write throughput, restoring healthy throughput in four minutes.",
+            observable_metrics=ObservableMetrics(
+                speaking_rate_wpm=140.0,
+                pause_count=1,
+                filler_words={},
+                gaze_on_camera_pct=0.91,
+            ),
+        ),
+    ]
+
+    gauntlet_result = await coach_engine.analyze_gauntlet(
+        user_id="test_candidate_1",
+        job_title=gen_result.role_inferred,
+        stages=gauntlet_stages,
+        context_text=sample_jd,
+    )
+
+    print(f"   Gauntlet Session ID: {gauntlet_result['session_id']}")
+    print(f"   Stages Evaluated: {len(gauntlet_result['stages'])}")
+    for s in gauntlet_result["stages"]:
+        print(f"     * Stage {s.stage_number}: Score={s.stage_score}, Delivery={s.delivery_subscore}, Content={s.content_subscore}")
+    print(f"   Cumulative Score: {gauntlet_result['cumulative_scorecard'].overall_score} / 100")
+    print(f"   Delivery Avg:     {gauntlet_result['cumulative_scorecard'].delivery_subscore} / 40")
+    print(f"   Content Avg:      {gauntlet_result['cumulative_scorecard'].content_subscore} / 60")
+    assert len(gauntlet_result["stages"]) == 3
+    assert gauntlet_result["cumulative_scorecard"].overall_score >= 40
+    print("   ✓ Multi-stage Gauntlet analysis and Atlas persistence confirmed.\n")
+
     print("=" * 70)
-    print("✓ ALL TESTS PASSED SUCCESSFULLY!")
+    print("✓ ALL TESTS (INCLUDING GAUNTLET & INGESTION) PASSED SUCCESSFULLY!")
     print("=" * 70)
 
 
